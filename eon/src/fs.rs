@@ -379,6 +379,19 @@ impl Builder {
         })
     }
 
+    fn old_depth(&self) -> usize {
+        self.cursor.depth()
+    }
+
+    fn cmp_entries<S: Store>(
+        &self,
+        new_name: &OsStr,
+        new_metadata: &Metadata,
+        db: &S,
+    ) -> Result<Ordering, S::ReadError> {
+        self.cursor.cmp_with_entry(new_name, new_metadata, db)
+    }
+
     fn depth(&self) -> usize {
         self.stack.len()
     }
@@ -399,19 +412,16 @@ impl Builder {
         let mut file_id_to_push = None;
 
         println!("push {:?} {:?}", name, metadata.inode);
-        if name == OsString::from("fng") {
-            println!("Items to push before: {:?}", self.item_changes);
-        }
 
-        while self.cursor.depth() > depth
-            || self.cursor.depth() == depth
-                && self.cursor.cmp_with_entry(name.as_os_str(), &metadata, db)? == Ordering::Less
+        while self.old_depth() > depth
+            || self.old_depth() == depth
+                && self.cmp_entries(name.as_os_str(), &metadata, db)? == Ordering::Less
         {
             self.item_changes.push(ItemChange::RemoveDirEntry {
                 entry: self.cursor.dir_entry(db)?.unwrap(),
                 inode: self.cursor.inode(db)?.unwrap(),
             });
-            self.cursor.next(db)?;
+            self.cursor.next_sibling(db)?;
         }
         self.stack.truncate(depth - 1);
 
@@ -462,9 +472,6 @@ impl Builder {
             file_id_to_push = Some(child_id);
         }
 
-        if name == OsString::from("fng") {
-            println!("Items to push before: {:?}", self.item_changes);
-        }
         self.stack.push(file_id_to_push.unwrap());
         self.visited_inodes.insert(metadata.inode);
 
@@ -481,7 +488,7 @@ impl Builder {
             self.cursor.next(db)?;
         }
 
-        println!("{:?}", self.item_changes);
+        println!("tree, item changes: {:#?}", self.item_changes);
 
         let mut new_items = Vec::new();
         for change in self.item_changes {
@@ -769,7 +776,7 @@ mod tests {
     #[test]
     fn test_builder_random() {
         for seed in 0..10000 {
-            let seed = 262;
+            // let seed = 262;
             println!("SEED: {}", seed);
             let mut rng = StdRng::from_seed(&[seed]);
 
@@ -910,6 +917,8 @@ mod tests {
                 .filter(|m| m.new_path.is_none())
                 .collect::<Vec<_>>();
             if let Some(remove) = rng.choose_mut(&mut removes) {
+                println!("Moving {:?} to {:?}", remove.dir.name, path);
+
                 remove.new_path = Some(path.clone());
                 let mut dir = remove.dir.clone();
                 dir.name = name;
@@ -955,12 +964,12 @@ mod tests {
             if depth < MAX_TEST_TREE_DEPTH {
                 for _ in 0..rng.gen_range(0, 2) {
                     let moved_entry = if rng.gen_weighted_bool(4) {
-                        Self::move_entry(rng, path, moves, &mut blacklist)
+                        // Self::move_entry(rng, path, moves, &mut blacklist)
+                        None
                     } else {
                         None
                     };
                     if let Some(moved_entry) = moved_entry {
-                        println!("Moving {:?}", moved_entry);
                         self.dir_entries.push(moved_entry);
                     } else {
                         let new_entry = Self::gen(rng, next_inode, depth + 1, &mut blacklist);
