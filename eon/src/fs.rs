@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::ops::{Add, AddAssign};
-use std::path::{Path, PathBuf};
+use std::path::{self, Path, PathBuf};
 use std::sync::Arc;
 
 trait Store {
@@ -964,24 +964,39 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::collections::HashSet;
+    use std::iter::Peekable;
     use std::path::PathBuf;
 
     #[test]
     fn test_builder_basic() {
         let db = NullStore::new(1);
-        let tree = Tree::new();
-        let mut builder = Builder::new(tree, &db).unwrap();
-        builder.push("a", Metadata::dir(1), 1, &db).unwrap();
-        builder.push("b", Metadata::dir(2), 2, &db).unwrap();
-        builder.push("c", Metadata::dir(3), 3, &db).unwrap();
-        builder.push("d", Metadata::dir(4), 3, &db).unwrap();
-        builder.push("e", Metadata::file(5), 3, &db).unwrap();
-        builder.push("f", Metadata::dir(6), 1, &db).unwrap();
-        let (tree, _) = builder.tree(&db).unwrap();
-        assert_eq!(
-            tree.paths(&db),
-            ["a", "a/b", "a/b/c", "a/b/d", "a/b/e", "f"]
-        );
+
+        let mut reference = TestFile::dir();
+        reference.insert_dir("a");
+        reference.insert_dir("a/b");
+        reference.insert_dir("a/b/c");
+        reference.insert_dir("a/b/d");
+        reference.insert_dir("a/b/e");
+        reference.insert_dir("f");
+
+        println!("{:?}", reference.paths());
+
+        let mut tree = Tree::new();
+        reference.update_tree(&mut tree);
+        assert_eq!(tree.paths(&db), reference.paths());
+
+        // let mut builder = Builder::new(tree, &db).unwrap();
+        // builder.push("a", Metadata::dir(1), 1, &db).unwrap();
+        // builder.push("b", Metadata::dir(2), 2, &db).unwrap();
+        // builder.push("c", Metadata::dir(3), 3, &db).unwrap();
+        // builder.push("d", Metadata::dir(4), 3, &db).unwrap();
+        // builder.push("e", Metadata::file(5), 3, &db).unwrap();
+        // builder.push("f", Metadata::dir(6), 1, &db).unwrap();
+        // let (tree, _) = builder.tree(&db).unwrap();
+        // assert_eq!(
+        //     tree.paths(&db),
+        //     ["a", "a/b", "a/b/c", "a/b/d", "a/b/e", "f"]
+        // );
 
         let mut builder = Builder::new(tree, &db).unwrap();
         builder.push("a", Metadata::dir(1), 1, &db).unwrap();
@@ -1167,6 +1182,51 @@ mod tests {
     }
 
     impl TestFile {
+        fn dir() -> Self {
+            TestFile {
+                inode: 0,
+                dir_entries: Some(Vec::new()),
+            }
+        }
+
+        fn file() -> Self {
+            TestFile {
+                inode: 0,
+                dir_entries: None,
+            }
+        }
+
+        fn insert_dir<I: Into<PathBuf>>(&mut self, path: I) {
+            let path: PathBuf = path.into();
+            self.insert_entries(path.components().peekable(), true);
+        }
+
+        fn insert_entries<'a, I: 'a + Iterator<Item = path::Component<'a>>>(
+            &mut self,
+            mut path_iter: Peekable<I>,
+            is_dir: bool,
+        ) {
+            if let Some(component) = path_iter.next() {
+                let dir_entries = self.dir_entries.as_mut().unwrap();
+                let new_entry = TestDirEntry {
+                    name: OsString::from(component.as_os_str()),
+                    file: if is_dir || path_iter.peek().is_some() {
+                        TestFile::dir()
+                    } else {
+                        TestFile::file()
+                    },
+                };
+                let entry = match dir_entries.binary_search(&new_entry) {
+                    Ok(index) => &mut dir_entries[index],
+                    Err(index) => {
+                        dir_entries.insert(index, new_entry);
+                        &mut dir_entries[index]
+                    }
+                };
+                entry.file.insert_entries(path_iter, is_dir);
+            }
+        }
+
         fn gen<T: Rng>(
             rng: &mut T,
             next_inode: &mut u64,
